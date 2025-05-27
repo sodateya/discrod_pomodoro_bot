@@ -97,4 +97,4 @@ python3 bot.py
 
 ## ライセンス
 
-MIT License
+sodateya
