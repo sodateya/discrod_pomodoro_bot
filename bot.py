@@ -34,13 +34,44 @@ class PomodoroView(ui.View):
 
         async def loop_task():
             try:
+                original_channel_name = channel.name
                 while True:
-                    await play_mp3(vc, 'start.mp3')
+                    # 作業時間（25分）
+                    try:
+                        await channel.edit(name=f"(マジで){original_channel_name}")
+                    except Exception as e:
+                        print(f"チャンネル名変更エラー: {e}")
+                        # チャンネル名の変更に失敗しても続行
+                    
+                    try:
+                        await play_mp3(vc, 'start.mp3')
+                    except Exception as e:
+                        print(f"音声再生エラー: {e}")
+                        # 音声再生に失敗しても続行
+                    
                     await asyncio.sleep(25 * 60)
-                    await play_mp3(vc, 'break.mp3')
+                    
+                    # 休憩時間（5分）
+                    try:
+                        await channel.edit(name=original_channel_name)
+                    except Exception as e:
+                        print(f"チャンネル名変更エラー: {e}")
+                        # チャンネル名の変更に失敗しても続行
+                    
+                    try:
+                        await play_mp3(vc, 'break.mp3')
+                    except Exception as e:
+                        print(f"音声再生エラー: {e}")
+                        # 音声再生に失敗しても続行
+                    
                     await asyncio.sleep(5 * 60)
             except asyncio.CancelledError:
                 await vc.disconnect()
+                # チャンネル名を元に戻す
+                try:
+                    await channel.edit(name=original_channel_name)
+                except Exception as e:
+                    print(f"チャンネル名変更エラー: {e}")
                 return
 
         task = asyncio.create_task(loop_task())
