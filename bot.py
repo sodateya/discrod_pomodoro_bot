@@ -2,8 +2,20 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import os
+import sys
 from dotenv import load_dotenv
 from discord import ui, app_commands
+from datetime import datetime, timedelta
+
+# ボイス接続に PyNaCl 必須（venv で pip install PyNaCl 済みの Python で起動すること）
+try:
+    import nacl
+except ImportError:
+    print("エラー: ボイス機能に PyNaCl が必要です。", file=sys.stderr)
+    print("  venv で起動: ./venv/bin/python bot.py", file=sys.stderr)
+    print("  または: pip install PyNaCl のあと python bot.py", file=sys.stderr)
+    sys.exit(1)
+
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_TIMER = {}  # サーバーごとのループタイマー管理
