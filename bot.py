@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import json
+import logging
 import os
 import sys
 import urllib.request
@@ -41,6 +42,26 @@ def _send_webhook_sync(url: str, text: str) -> None:
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         print(f"Webhook送信失敗: {e}", file=sys.stderr)
+
+
+class DiscordRateLimitWebhookHandler(logging.Handler):
+    """discord.http のレート制限 (429) を Webhook に通知する。"""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.WARNING:
+            return
+        msg = record.getMessage()
+        if "429" not in msg and "rate limit" not in msg.lower():
+            return
+        if not ERROR_WEBHOOK_URL:
+            return
+        text = f"⚠️ ポモドーロボット レート制限\n**discord.http**\n```\n{msg}\n```"
+        _send_webhook_sync(ERROR_WEBHOOK_URL, text)
+
+
+# レート制限 (429) を Webhook で通知
+if ERROR_WEBHOOK_URL:
+    logging.getLogger("discord.http").addHandler(DiscordRateLimitWebhookHandler())
 
 
 async def notify_error(context: str, error: Exception) -> None:
