@@ -44,15 +44,22 @@ def _send_webhook_sync(url: str, text: str) -> None:
 
 
 async def notify_error(context: str, error: Exception) -> None:
-    """エラーをログ出力し、設定されていれば Webhook に通知する。"""
+    """エラーをログ出力し、設定されていれば Webhook に通知する。
+    Unknown Message (10008) は通知対象外（ephemeral メッセージが閉じられた等でよくあるため）。
+    """
     msg = f"{context}: {type(error).__name__}: {error}"
     print(msg, file=sys.stderr)
+    # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。Webhook は飛ばさない。
+    if getattr(error, "code", None) == 10008:
+        return
     if ERROR_WEBHOOK_URL:
         text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
         try:
             await asyncio.to_thread(_send_webhook_sync, ERROR_WEBHOOK_URL, text)
         except Exception as e:
-            print(f"Webhook通知エラー: {e}", file=sys.stderr)
+            print(f"Webhook送信失敗: {e}", file=sys.stderr)
+            if "403" in str(e):
+                print("  → Webhook URL が無効か削除されています。Discord のチャンネル設定で Webhook を確認・再生成してください。", file=sys.stderr)
 
 
 class PomodoroView(ui.View):
