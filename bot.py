@@ -91,8 +91,8 @@ class PomodoroView(ui.View):
         button.disabled = True
         try:
             await interaction.message.edit(view=self)
-        except discord.NotFound:
-            await notify_error("メッセージの編集（開始時）", discord.NotFound("メッセージが見つかりません"))
+        except discord.NotFound as e:
+            await notify_error("メッセージの編集（開始時）", e)
         except Exception as e:
             await notify_error("メッセージの編集（開始時）", e)
 
@@ -189,8 +189,8 @@ class PomodoroView(ui.View):
             button.style = discord.ButtonStyle.grey
             try:
                 await interaction.message.edit(view=self)
-            except discord.NotFound:
-                await notify_error("メッセージの編集（一時停止→再開）", discord.NotFound("メッセージが見つかりません"))
+            except discord.NotFound as e:
+                await notify_error("メッセージの編集（一時停止→再開）", e)
             except Exception as e:
                 await notify_error("メッセージの編集（一時停止→再開）", e)
             await interaction.response.send_message(f'▶️ タイマーを再開しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
@@ -204,8 +204,8 @@ class PomodoroView(ui.View):
             button.style = discord.ButtonStyle.green
             try:
                 await interaction.message.edit(view=self)
-            except discord.NotFound:
-                await notify_error("メッセージの編集（一時停止）", discord.NotFound("メッセージが見つかりません"))
+            except discord.NotFound as e:
+                await notify_error("メッセージの編集（一時停止）", e)
             except Exception as e:
                 await notify_error("メッセージの編集（一時停止）", e)
             await interaction.response.send_message(f'⏸️ タイマーを一時停止しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
@@ -248,8 +248,8 @@ class PomodoroView(ui.View):
                 child.style = discord.ButtonStyle.grey
         try:
             await interaction.message.edit(view=self)
-        except discord.NotFound:
-            await notify_error("メッセージの編集（停止後）", discord.NotFound("メッセージが見つかりません"))
+        except discord.NotFound as e:
+            await notify_error("メッセージの編集（停止後）", e)
         except Exception as e:
             await notify_error("メッセージの編集（停止後）", e)
 
