@@ -42,7 +42,21 @@ def _send_webhook_sync(url: str, text: str) -> None:
         req = urllib.request.Request(
             url, data=data, method="POST", headers={"Content-Type": "application/json; charset=utf-8"}
         )
-        urllib.request.urlopen(req, timeout=10)
+        with urllib.request.urlopen(req, timeout=10) as res:
+            pass  # 2xx で成功
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        print(f"Webhook送信失敗: HTTP {e.code} {e.reason}", file=sys.stderr)
+        if body:
+            print(f"  → Discord の応答: {body[:300]}", file=sys.stderr)
+        if e.code == 403:
+            print("  → Webhook が削除されたか、URL のトークンが無効です。チャンネル設定で Webhook を新規作成し、.env の URL を貼り直してください。", file=sys.stderr)
+        elif e.code == 404:
+            print("  → Webhook が存在しません（削除されたか URL が間違っています）。", file=sys.stderr)
     except Exception as e:
         print(f"Webhook送信失敗: {e}", file=sys.stderr)
         if "403" in str(e):
@@ -130,13 +144,19 @@ class PomodoroView(ui.View):
             return
 
         channel = interaction.user.voice.channel
-        
+
+        # インタラクションは3秒以内に応答必須。VC接続は時間がかかるため先に defer
+        await interaction.response.defer(ephemeral=True)
+
         # すでにVCに接続している場合は切断
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect()
-        
+
         vc = await channel.connect()
-        await interaction.response.send_message('🔁 ポモドーロタイマー開始!25分作業 / 5分休憩を繰り返します', ephemeral=True)
+        try:
+            await interaction.followup.send('🔁 ポモドーロタイマー開始!25分作業 / 5分休憩を繰り返します', ephemeral=True)
+        except discord.HTTPException as e:
+            await notify_error("開始メッセージ送信", e)
 
         # 開始ボタンを非アクティブに
         button.disabled = True
