@@ -145,8 +145,15 @@ class PomodoroView(ui.View):
 
         channel = interaction.user.voice.channel
 
-        # インタラクションは3秒以内に応答必須。VC接続は時間がかかるため先に defer
-        await interaction.response.defer(ephemeral=True)
+        # インタラクションは3秒以内に応答必須。届いた時点で期限切れ(10062)の場合は defer せず続行
+        can_use_followup = True
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound as e:
+            if getattr(e, "code", None) == 10062:  # Unknown interaction（届く前に期限切れ）
+                can_use_followup = False
+            else:
+                raise
 
         # すでにVCに接続している場合は切断
         if interaction.guild.voice_client:
@@ -154,7 +161,10 @@ class PomodoroView(ui.View):
 
         vc = await channel.connect()
         try:
-            await interaction.followup.send('🔁 ポモドーロタイマー開始!25分作業 / 5分休憩を繰り返します', ephemeral=True)
+            if can_use_followup:
+                await interaction.followup.send('🔁 ポモドーロタイマー開始!25分作業 / 5分休憩を繰り返します', ephemeral=True)
+            else:
+                await interaction.channel.send('🔁 ポモドーロタイマー開始!25分作業 / 5分休憩を繰り返します')
         except discord.HTTPException as e:
             await notify_error("開始メッセージ送信", e)
 
