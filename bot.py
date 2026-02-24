@@ -72,14 +72,26 @@ class PomodoroView(ui.View):
         GUILD_PAUSED[interaction.guild_id] = False
         GUILD_REMAINING[interaction.guild_id] = 25 * 60  # 25分を秒で設定
 
+        # 既に(ポモ中)が付いている場合は外した名前を元名として使う（二重付与・比較ミス防止）
+        _raw_name = channel.name
+        if _raw_name.startswith("(ポモ中)"):
+            original_channel_name = _raw_name.replace("(ポモ中)", "", 1).strip() or _raw_name
+        else:
+            original_channel_name = _raw_name
+        channel_id = channel.id
+
         async def loop_task():
             try:
-                original_channel_name = channel.name
                 while True:
-                    # 作業時間（25分）
+                    # 作業時間（25分）：現在のチャンネル名をAPIから取得してから付与
                     try:
-                        if channel.name != f"(ポモ中){original_channel_name}":
-                            await channel.edit(name=f"(ポモ中){original_channel_name}")
+                        current = interaction.guild.get_channel(channel_id)
+                        if current is None:
+                            current = await interaction.guild.fetch_channel(channel_id)
+                        current_name = current.name if current else ""
+                        new_name = f"(ポモ中){original_channel_name}"
+                        if current_name != new_name:
+                            await current.edit(name=new_name)
                     except Exception as e:
                         print(f"チャンネル名変更エラー: {e}")
                         # エラーが発生しても続行
@@ -100,7 +112,9 @@ class PomodoroView(ui.View):
                     
                     # 休憩時間（5分）
                     try:
-                        await channel.edit(name=original_channel_name)
+                        ch = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
+                        if ch:
+                            await ch.edit(name=original_channel_name)
                     except Exception as e:
                         print(f"チャンネル名変更エラー: {e}")
                         # エラーが発生しても続行
@@ -121,7 +135,9 @@ class PomodoroView(ui.View):
             except asyncio.CancelledError:
                 await vc.disconnect()
                 try:
-                    await channel.edit(name=original_channel_name)
+                    ch = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
+                    if ch:
+                        await ch.edit(name=original_channel_name)
                 except Exception as e:
                     print(f"チャンネル名変更エラー: {e}")
                     # エラーが発生しても続行
@@ -167,22 +183,22 @@ class PomodoroView(ui.View):
                 print(f"メッセージの編集に失敗しました: {e}")
             await interaction.response.send_message(f'⏸️ タイマーを一時停止しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
 
-    @discord.ui.button(label="停止", style=discord.ButtonStyle.red, emoji="⏹️", custom_id="stop_pomodoro")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _do_stop(self, interaction: discord.Interaction):
+        """停止・終了の共通処理。defer 済みであること。"""
         task = GUILD_TIMER.get(interaction.guild_id)
         if not task:
-            await interaction.response.send_message('⏹️ タイマーは動いていません。', ephemeral=True)
-            return
-
-        # 3秒以内に必ず応答する（先に defer してから後で followup）
-        await interaction.response.defer(ephemeral=True)
+            return False
 
         task.cancel()
-        del GUILD_TIMER[interaction.guild_id]
-        del GUILD_PAUSED[interaction.guild_id]
-        del GUILD_REMAINING[interaction.guild_id]
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=6.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
 
-        # ボットが接続しているVCのチャンネル名を復元（ユーザーのVCではない）
+        GUILD_TIMER.pop(interaction.guild_id, None)
+        GUILD_PAUSED.pop(interaction.guild_id, None)
+        GUILD_REMAINING.pop(interaction.guild_id, None)
+
         vc = interaction.guild.voice_client
         if vc and vc.channel and "(ポモ中)" in vc.channel.name:
             try:
@@ -196,7 +212,6 @@ class PomodoroView(ui.View):
             except Exception as e:
                 print(f"VC切断エラー: {e}")
 
-        # 開始ボタンを再度アクティブに
         for child in self.children:
             if child.custom_id == "start_pomodoro":
                 child.disabled = False
@@ -211,7 +226,33 @@ class PomodoroView(ui.View):
         except Exception as e:
             print(f"メッセージの編集に失敗しました: {e}")
 
-        await interaction.followup.send('🛑 ポモドーロを停止しました。', ephemeral=True)
+        try:
+            await interaction.followup.send('🛑 ポモドーロを停止しました。', ephemeral=True)
+        except discord.HTTPException as e:
+            print(f"followup送信エラー: {e}")
+            try:
+                await interaction.channel.send('🛑 ポモドーロを停止しました。')
+            except Exception:
+                pass
+        return True
+
+    @discord.ui.button(label="停止", style=discord.ButtonStyle.red, emoji="⏹️", custom_id="stop_pomodoro")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild_id not in GUILD_TIMER:
+            await interaction.response.send_message('⏹️ タイマーは動いていません。', ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not await self._do_stop(interaction):
+            await interaction.followup.send('⏹️ タイマーは動いていません。', ephemeral=True)
+
+    @discord.ui.button(label="終了", style=discord.ButtonStyle.red, emoji="🔚", custom_id="end_pomodoro")
+    async def end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild_id not in GUILD_TIMER:
+            await interaction.response.send_message('🔚 タイマーは動いていません。', ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        if not await self._do_stop(interaction):
+            await interaction.followup.send('🔚 タイマーは動いていません。', ephemeral=True)
 
 class PomodoroBot(commands.Bot):
     def __init__(self):
@@ -239,7 +280,7 @@ bot = PomodoroBot()
 async def pomodoro(interaction: discord.Interaction):
     view = PomodoroView()
     await interaction.response.send_message(
-        "ポモドーロタイマー\n▶️ 開始ボタン: タイマーを開始\n⏸️ 一時停止ボタン: タイマーを一時停止/再開\n⏹️ 停止ボタン: タイマーを停止",
+        "ポモドーロタイマー\n▶️ 開始: タイマーを開始\n⏸️ 一時停止: 一時停止/再開\n⏹️ 停止 / 🔚 終了: タイマーを停止",
         view=view,
         ephemeral=True
     )
