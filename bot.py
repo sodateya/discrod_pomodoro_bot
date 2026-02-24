@@ -1,11 +1,9 @@
 import discord
 from discord.ext import commands, tasks
 import asyncio
-import json
 import logging
 import os
 import sys
-import urllib.request
 from dotenv import load_dotenv
 from discord import ui, app_commands
 from datetime import datetime, timedelta
@@ -21,8 +19,7 @@ except ImportError:
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-ERROR_WEBHOOK_URL = os.getenv("ERROR_WEBHOOK_URL", "").strip()
-# エラー通知先チャンネルID（ボットの「メッセージを送信」権限で投稿。Webhook の代わりに使える）
+# エラー・レート制限の通知先チャンネルID（ボットに「メッセージを送信」権限を付与すること）
 _error_channel_id_str = os.getenv("ERROR_CHANNEL_ID", "").strip()
 ERROR_CHANNEL_ID = int(_error_channel_id_str) if _error_channel_id_str.isdigit() else None
 GUILD_TIMER = {}  # サーバーごとのループタイマー管理
@@ -36,35 +33,8 @@ intents.guilds = True
 intents.members = True
 
 
-def _send_webhook_sync(url: str, text: str) -> None:
-    try:
-        data = json.dumps({"content": text[:2000]}).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, method="POST", headers={"Content-Type": "application/json; charset=utf-8"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as res:
-            pass  # 2xx で成功
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace").strip()
-        except Exception:
-            pass
-        print(f"Webhook送信失敗: HTTP {e.code} {e.reason}", file=sys.stderr)
-        if body:
-            print(f"  → Discord の応答: {body[:300]}", file=sys.stderr)
-        if e.code == 403:
-            print("  → Webhook が削除されたか、URL のトークンが無効です。チャンネル設定で Webhook を新規作成し、.env の URL を貼り直してください。", file=sys.stderr)
-        elif e.code == 404:
-            print("  → Webhook が存在しません（削除されたか URL が間違っています）。", file=sys.stderr)
-    except Exception as e:
-        print(f"Webhook送信失敗: {e}", file=sys.stderr)
-        if "403" in str(e):
-            print("  → ERROR_WEBHOOK_URL が無効です。Discord のチャンネル設定で Webhook を確認・再生成し、.env を更新してください。", file=sys.stderr)
-
-
-class DiscordRateLimitWebhookHandler(logging.Handler):
-    """discord.http のレート制限 (429) をチャンネルまたは Webhook に通知する。"""
+class DiscordRateLimitChannelHandler(logging.Handler):
+    """discord.http のレート制限 (429) を ERROR_CHANNEL_ID のチャンネルに通知する。"""
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.levelno < logging.WARNING:
@@ -72,27 +42,25 @@ class DiscordRateLimitWebhookHandler(logging.Handler):
         msg = record.getMessage()
         if "429" not in msg and "rate limit" not in msg.lower():
             return
+        if not ERROR_CHANNEL_ID:
+            return
         text = f"⚠️ ポモドーロボット レート制限\n**discord.http**\n```\n{msg}\n```"
         bot = globals().get("bot")
-        if ERROR_CHANNEL_ID and bot and bot.is_ready():
+        if bot and bot.is_ready():
             try:
                 ch = bot.get_channel(ERROR_CHANNEL_ID)
                 if ch:
                     asyncio.run_coroutine_threadsafe(ch.send(text[:2000]), bot.loop).result(timeout=10)
-                    return
             except Exception:
                 pass
-        if ERROR_WEBHOOK_URL:
-            _send_webhook_sync(ERROR_WEBHOOK_URL, text)
 
 
-# レート制限 (429) を通知（チャンネル or Webhook）
-if ERROR_CHANNEL_ID or ERROR_WEBHOOK_URL:
-    logging.getLogger("discord.http").addHandler(DiscordRateLimitWebhookHandler())
+if ERROR_CHANNEL_ID:
+    logging.getLogger("discord.http").addHandler(DiscordRateLimitChannelHandler())
 
 
 async def notify_error(context: str, error: Exception) -> None:
-    """エラーをログ出力し、設定されていれば ERROR_CHANNEL_ID または Webhook に通知する。
+    """エラーをログ出力し、設定されていれば ERROR_CHANNEL_ID のチャンネルに通知する。
     Unknown Message (10008) は通知・ログともスキップ（ephemeral メッセージが閉じられた等でよくあるため）。
     """
     # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。ログ・通知ともスキップ。
@@ -100,24 +68,17 @@ async def notify_error(context: str, error: Exception) -> None:
         return
     msg = f"{context}: {type(error).__name__}: {error}"
     print(msg, file=sys.stderr)
+    if not ERROR_CHANNEL_ID:
+        return
     text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
-    # チャンネルIDが設定されていればボットの権限で送信（Webhook 不要）
     bot = globals().get("bot")
-    if ERROR_CHANNEL_ID and bot and bot.is_ready():
+    if bot and bot.is_ready():
         try:
             ch = bot.get_channel(ERROR_CHANNEL_ID)
             if ch:
                 await ch.send(text[:2000])
-                return
         except Exception as e:
             print(f"エラー通知チャンネル送信失敗: {e}", file=sys.stderr)
-    if ERROR_WEBHOOK_URL:
-        try:
-            await asyncio.to_thread(_send_webhook_sync, ERROR_WEBHOOK_URL, text)
-        except Exception as e:
-            print(f"Webhook送信失敗: {e}", file=sys.stderr)
-            if "403" in str(e):
-                print("  → Webhook URL が無効か削除されています。Discord のチャンネル設定で Webhook を確認・再生成してください。", file=sys.stderr)
 
 
 class PomodoroView(ui.View):
