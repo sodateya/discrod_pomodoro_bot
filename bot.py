@@ -45,13 +45,13 @@ def _send_webhook_sync(url: str, text: str) -> None:
 
 async def notify_error(context: str, error: Exception) -> None:
     """エラーをログ出力し、設定されていれば Webhook に通知する。
-    Unknown Message (10008) は通知対象外（ephemeral メッセージが閉じられた等でよくあるため）。
+    Unknown Message (10008) は通知・ログともスキップ（ephemeral メッセージが閉じられた等でよくあるため）。
     """
-    msg = f"{context}: {type(error).__name__}: {error}"
-    print(msg, file=sys.stderr)
-    # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。Webhook は飛ばさない。
+    # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。ログ・Webhook ともスキップ。
     if getattr(error, "code", None) == 10008:
         return
+    msg = f"{context}: {type(error).__name__}: {error}"
+    print(msg, file=sys.stderr)
     if ERROR_WEBHOOK_URL:
         text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
         try:
