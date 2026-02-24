@@ -78,8 +78,8 @@ class PomodoroView(ui.View):
                 while True:
                     # 作業時間（25分）
                     try:
-                        if channel.name != f"(マジで){original_channel_name}":
-                            await channel.edit(name=f"(マジで){original_channel_name}")
+                        if channel.name != f"(ポモ中){original_channel_name}":
+                            await channel.edit(name=f"(ポモ中){original_channel_name}")
                     except Exception as e:
                         print(f"チャンネル名変更エラー: {e}")
                         # エラーが発生しても続行
@@ -184,9 +184,9 @@ class PomodoroView(ui.View):
 
         # ボットが接続しているVCのチャンネル名を復元（ユーザーのVCではない）
         vc = interaction.guild.voice_client
-        if vc and vc.channel and "(マジで)" in vc.channel.name:
+        if vc and vc.channel and "(ポモ中)" in vc.channel.name:
             try:
-                original_name = vc.channel.name.replace("(マジで)", "").strip()
+                original_name = vc.channel.name.replace("(ポモ中)", "").strip()
                 await vc.channel.edit(name=original_name)
             except Exception as e:
                 print(f"チャンネル名変更エラー: {e}")
