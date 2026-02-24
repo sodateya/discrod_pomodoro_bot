@@ -42,6 +42,8 @@ def _send_webhook_sync(url: str, text: str) -> None:
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         print(f"Webhook送信失敗: {e}", file=sys.stderr)
+        if "403" in str(e):
+            print("  → ERROR_WEBHOOK_URL が無効です。Discord のチャンネル設定で Webhook を確認・再生成し、.env を更新してください。", file=sys.stderr)
 
 
 class DiscordRateLimitWebhookHandler(logging.Handler):
