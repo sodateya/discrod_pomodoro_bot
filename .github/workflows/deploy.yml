@@ -1,0 +1,26 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 100.74.216.6
+          username: sodapi
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/sodateya/discrod_pomodoro_bot
+            git pull origin main
+            sudo systemctl restart discordbot
