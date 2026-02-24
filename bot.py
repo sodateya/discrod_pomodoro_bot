@@ -1,8 +1,10 @@
 import discord
 from discord.ext import commands, tasks
 import asyncio
+import json
 import os
 import sys
+import urllib.request
 from dotenv import load_dotenv
 from discord import ui, app_commands
 from datetime import datetime, timedelta
@@ -18,6 +20,7 @@ except ImportError:
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+ERROR_WEBHOOK_URL = os.getenv("ERROR_WEBHOOK_URL", "").strip()
 GUILD_TIMER = {}  # サーバーごとのループタイマー管理
 GUILD_PAUSED = {}  # サーバーごとの一時停止状態管理
 GUILD_REMAINING = {}  # サーバーごとの残り時間管理
@@ -27,6 +30,30 @@ intents.message_content = True
 intents.voice_states = True
 intents.guilds = True
 intents.members = True
+
+
+def _send_webhook_sync(url: str, text: str) -> None:
+    try:
+        data = json.dumps({"content": text[:2000]}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST", headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"Webhook送信失敗: {e}", file=sys.stderr)
+
+
+async def notify_error(context: str, error: Exception) -> None:
+    """エラーをログ出力し、設定されていれば Webhook に通知する。"""
+    msg = f"{context}: {type(error).__name__}: {error}"
+    print(msg, file=sys.stderr)
+    if ERROR_WEBHOOK_URL:
+        text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
+        try:
+            await asyncio.to_thread(_send_webhook_sync, ERROR_WEBHOOK_URL, text)
+        except Exception as e:
+            print(f"Webhook通知エラー: {e}", file=sys.stderr)
+
 
 class PomodoroView(ui.View):
     def __init__(self):
@@ -65,9 +92,9 @@ class PomodoroView(ui.View):
         try:
             await interaction.message.edit(view=self)
         except discord.NotFound:
-            print("メッセージの編集に失敗しました（メッセージが見つかりません）")
+            await notify_error("メッセージの編集（開始時）", discord.NotFound("メッセージが見つかりません"))
         except Exception as e:
-            print(f"メッセージの編集に失敗しました: {e}")
+            await notify_error("メッセージの編集（開始時）", e)
 
         GUILD_PAUSED[interaction.guild_id] = False
         GUILD_REMAINING[interaction.guild_id] = 25 * 60  # 25分を秒で設定
@@ -93,13 +120,13 @@ class PomodoroView(ui.View):
                         if current_name != new_name:
                             await current.edit(name=new_name)
                     except Exception as e:
-                        print(f"チャンネル名変更エラー: {e}")
+                        await notify_error("チャンネル名変更（作業開始時）", e)
                         # エラーが発生しても続行
                     
                     try:
                         await play_mp3(vc, 'start.mp3')
                     except Exception as e:
-                        print(f"音声再生エラー: {e}")
+                        await notify_error("音声再生 start.mp3", e)
                         # エラーが発生しても続行
                     
                     GUILD_REMAINING[interaction.guild_id] = 25 * 60
@@ -116,13 +143,13 @@ class PomodoroView(ui.View):
                         if ch:
                             await ch.edit(name=original_channel_name)
                     except Exception as e:
-                        print(f"チャンネル名変更エラー: {e}")
+                        await notify_error("チャンネル名変更（休憩開始時）", e)
                         # エラーが発生しても続行
                     
                     try:
                         await play_mp3(vc, 'break.mp3')
                     except Exception as e:
-                        print(f"音声再生エラー: {e}")
+                        await notify_error("音声再生 break.mp3", e)
                         # エラーが発生しても続行
                     
                     GUILD_REMAINING[interaction.guild_id] = 5 * 60
@@ -139,7 +166,7 @@ class PomodoroView(ui.View):
                     if ch:
                         await ch.edit(name=original_channel_name)
                 except Exception as e:
-                    print(f"チャンネル名変更エラー: {e}")
+                    await notify_error("チャンネル名復元（停止時）", e)
                     # エラーが発生しても続行
                 return
 
@@ -163,9 +190,9 @@ class PomodoroView(ui.View):
             try:
                 await interaction.message.edit(view=self)
             except discord.NotFound:
-                print("メッセージの編集に失敗しました（メッセージが見つかりません）")
+                await notify_error("メッセージの編集（一時停止→再開）", discord.NotFound("メッセージが見つかりません"))
             except Exception as e:
-                print(f"メッセージの編集に失敗しました: {e}")
+                await notify_error("メッセージの編集（一時停止→再開）", e)
             await interaction.response.send_message(f'▶️ タイマーを再開しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
         else:
             GUILD_PAUSED[interaction.guild_id] = True
@@ -178,9 +205,9 @@ class PomodoroView(ui.View):
             try:
                 await interaction.message.edit(view=self)
             except discord.NotFound:
-                print("メッセージの編集に失敗しました（メッセージが見つかりません）")
+                await notify_error("メッセージの編集（一時停止）", discord.NotFound("メッセージが見つかりません"))
             except Exception as e:
-                print(f"メッセージの編集に失敗しました: {e}")
+                await notify_error("メッセージの編集（一時停止）", e)
             await interaction.response.send_message(f'⏸️ タイマーを一時停止しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
 
     async def _do_stop(self, interaction: discord.Interaction):
@@ -205,12 +232,12 @@ class PomodoroView(ui.View):
                 original_name = vc.channel.name.replace("(ポモ中)", "").strip()
                 await vc.channel.edit(name=original_name)
             except Exception as e:
-                print(f"チャンネル名変更エラー: {e}")
+                await notify_error("チャンネル名復元（_do_stop）", e)
         if vc:
             try:
                 await vc.disconnect()
             except Exception as e:
-                print(f"VC切断エラー: {e}")
+                await notify_error("VC切断", e)
 
         for child in self.children:
             if child.custom_id == "start_pomodoro":
@@ -222,14 +249,14 @@ class PomodoroView(ui.View):
         try:
             await interaction.message.edit(view=self)
         except discord.NotFound:
-            print("メッセージの編集に失敗しました（メッセージが見つかりません）")
+            await notify_error("メッセージの編集（停止後）", discord.NotFound("メッセージが見つかりません"))
         except Exception as e:
-            print(f"メッセージの編集に失敗しました: {e}")
+            await notify_error("メッセージの編集（停止後）", e)
 
         try:
             await interaction.followup.send('🛑 ポモドーロを停止しました。', ephemeral=True)
         except discord.HTTPException as e:
-            print(f"followup送信エラー: {e}")
+            await notify_error("followup送信", e)
             try:
                 await interaction.channel.send('🛑 ポモドーロを停止しました。')
             except Exception:
@@ -265,7 +292,7 @@ class PomodoroBot(commands.Bot):
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} command(s)")
         except Exception as e:
-            print(f"Failed to sync commands: {e}")
+            await notify_error("コマンド同期", e)
 
     async def on_ready(self):
         print(f'✅ Bot ready: {self.user}')

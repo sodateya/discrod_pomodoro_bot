@@ -51,6 +51,8 @@ brew install ffmpeg
 
 ```
 DISCORD_TOKEN=あなたのボットトークン
+# エラー発生時に通知する Discord Webhook URL（任意）
+ERROR_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 6. 音声ファイルの準備
