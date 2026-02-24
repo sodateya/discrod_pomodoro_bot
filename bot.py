@@ -22,6 +22,9 @@ except ImportError:
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 ERROR_WEBHOOK_URL = os.getenv("ERROR_WEBHOOK_URL", "").strip()
+# エラー通知先チャンネルID（ボットの「メッセージを送信」権限で投稿。Webhook の代わりに使える）
+_error_channel_id_str = os.getenv("ERROR_CHANNEL_ID", "").strip()
+ERROR_CHANNEL_ID = int(_error_channel_id_str) if _error_channel_id_str.isdigit() else None
 GUILD_TIMER = {}  # サーバーごとのループタイマー管理
 GUILD_PAUSED = {}  # サーバーごとの一時停止状態管理
 GUILD_REMAINING = {}  # サーバーごとの残り時間管理
@@ -47,7 +50,7 @@ def _send_webhook_sync(url: str, text: str) -> None:
 
 
 class DiscordRateLimitWebhookHandler(logging.Handler):
-    """discord.http のレート制限 (429) を Webhook に通知する。"""
+    """discord.http のレート制限 (429) をチャンネルまたは Webhook に通知する。"""
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.levelno < logging.WARNING:
@@ -55,28 +58,46 @@ class DiscordRateLimitWebhookHandler(logging.Handler):
         msg = record.getMessage()
         if "429" not in msg and "rate limit" not in msg.lower():
             return
-        if not ERROR_WEBHOOK_URL:
-            return
         text = f"⚠️ ポモドーロボット レート制限\n**discord.http**\n```\n{msg}\n```"
-        _send_webhook_sync(ERROR_WEBHOOK_URL, text)
+        bot = globals().get("bot")
+        if ERROR_CHANNEL_ID and bot and bot.is_ready():
+            try:
+                ch = bot.get_channel(ERROR_CHANNEL_ID)
+                if ch:
+                    asyncio.run_coroutine_threadsafe(ch.send(text[:2000]), bot.loop).result(timeout=10)
+                    return
+            except Exception:
+                pass
+        if ERROR_WEBHOOK_URL:
+            _send_webhook_sync(ERROR_WEBHOOK_URL, text)
 
 
-# レート制限 (429) を Webhook で通知
-if ERROR_WEBHOOK_URL:
+# レート制限 (429) を通知（チャンネル or Webhook）
+if ERROR_CHANNEL_ID or ERROR_WEBHOOK_URL:
     logging.getLogger("discord.http").addHandler(DiscordRateLimitWebhookHandler())
 
 
 async def notify_error(context: str, error: Exception) -> None:
-    """エラーをログ出力し、設定されていれば Webhook に通知する。
+    """エラーをログ出力し、設定されていれば ERROR_CHANNEL_ID または Webhook に通知する。
     Unknown Message (10008) は通知・ログともスキップ（ephemeral メッセージが閉じられた等でよくあるため）。
     """
-    # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。ログ・Webhook ともスキップ。
+    # 10008 Unknown Message = 編集対象メッセージが存在しない（ユーザーが閉じた等）。ログ・通知ともスキップ。
     if getattr(error, "code", None) == 10008:
         return
     msg = f"{context}: {type(error).__name__}: {error}"
     print(msg, file=sys.stderr)
+    text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
+    # チャンネルIDが設定されていればボットの権限で送信（Webhook 不要）
+    bot = globals().get("bot")
+    if ERROR_CHANNEL_ID and bot and bot.is_ready():
+        try:
+            ch = bot.get_channel(ERROR_CHANNEL_ID)
+            if ch:
+                await ch.send(text[:2000])
+                return
+        except Exception as e:
+            print(f"エラー通知チャンネル送信失敗: {e}", file=sys.stderr)
     if ERROR_WEBHOOK_URL:
-        text = f"⚠️ ポモドーロボット エラー\n**{context}**\n```\n{type(error).__name__}: {error}\n```"
         try:
             await asyncio.to_thread(_send_webhook_sync, ERROR_WEBHOOK_URL, text)
         except Exception as e:
@@ -136,6 +157,9 @@ class PomodoroView(ui.View):
         else:
             original_channel_name = _raw_name
         channel_id = channel.id
+        # チャンネル名変更エラーをユーザーに1回だけ通知したか（スパム防止）
+        channel_rename_error_told = [False]
+        text_channel = interaction.channel
 
         async def loop_task():
             try:
@@ -151,7 +175,12 @@ class PomodoroView(ui.View):
                             await current.edit(name=new_name)
                     except Exception as e:
                         await notify_error("チャンネル名変更（作業開始時）", e)
-                        # エラーが発生しても続行
+                        if not channel_rename_error_told[0] and text_channel:
+                            try:
+                                await text_channel.send("⚠️ VC名の変更ができませんでした（権限不足など）。タイマー・音声はそのまま続行します。")
+                                channel_rename_error_told[0] = True
+                            except Exception:
+                                pass
                     
                     try:
                         await play_mp3(vc, 'start.mp3')
@@ -174,7 +203,12 @@ class PomodoroView(ui.View):
                             await ch.edit(name=original_channel_name)
                     except Exception as e:
                         await notify_error("チャンネル名変更（休憩開始時）", e)
-                        # エラーが発生しても続行
+                        if not channel_rename_error_told[0] and text_channel:
+                            try:
+                                await text_channel.send("⚠️ VC名の変更ができませんでした（権限不足など）。タイマー・音声はそのまま続行します。")
+                                channel_rename_error_told[0] = True
+                            except Exception:
+                                pass
                     
                     try:
                         await play_mp3(vc, 'break.mp3')
@@ -197,7 +231,6 @@ class PomodoroView(ui.View):
                         await ch.edit(name=original_channel_name)
                 except Exception as e:
                     await notify_error("チャンネル名復元（停止時）", e)
-                    # エラーが発生しても続行
                 return
 
         task = asyncio.create_task(loop_task())

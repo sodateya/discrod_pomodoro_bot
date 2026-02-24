@@ -51,8 +51,11 @@ brew install ffmpeg
 
 ```
 DISCORD_TOKEN=あなたのボットトークン
-# エラー発生時に通知する Discord Webhook URL（任意）
-ERROR_WEBHOOK_URL=https://discord.com/api/webhooks/...
+# エラー・レート制限の通知先（どちらか一方で可）
+# 方法A: チャンネルID → ボットの「メッセージを送信」権限で投稿（推奨）
+ERROR_CHANNEL_ID=1234567890123456789
+# 方法B: Webhook URL
+# ERROR_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 6. 音声ファイルの準備
