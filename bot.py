@@ -316,7 +316,11 @@ class PomodoroView(ui.View):
 
 class PomodoroBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix='!', intents=intents)
+        super().__init__(
+            command_prefix='!',
+            intents=intents,
+            status=discord.Status.invisible,
+        )
         self.initial_extensions = []
 
     async def setup_hook(self):
@@ -329,6 +333,7 @@ class PomodoroBot(commands.Bot):
 
     async def on_ready(self):
         print(f'✅ Bot ready: {self.user}')
+        await self.change_presence(status=discord.Status.invisible)
         self.add_view(PomodoroView())
 
 bot = PomodoroBot()
