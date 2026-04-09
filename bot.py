@@ -8,16 +8,23 @@ from dotenv import load_dotenv
 from discord import ui, app_commands
 from datetime import datetime, timedelta
 
-# ボイス接続に PyNaCl 必須（venv で pip install PyNaCl 済みの Python で起動すること）
+# ボイス接続: PyNaCl + davey（Discord の DAVE 暗号化。無いと接続が 4017 で拒否される）
 try:
     import nacl
+    import davey  # noqa: F401
 except ImportError:
-    print("エラー: ボイス機能に PyNaCl が必要です。", file=sys.stderr)
-    print("  venv で起動: ./venv/bin/python bot.py", file=sys.stderr)
-    print("  または: pip install PyNaCl のあと python bot.py", file=sys.stderr)
+    print("エラー: ボイス機能に PyNaCl と davey が必要です。", file=sys.stderr)
+    print("  例: python3 -m pip install --user --break-system-packages 'discord.py[voice]>=2.7.1'", file=sys.stderr)
     sys.exit(1)
 
 load_dotenv()
+from vc_channel_rename import (
+    ensure_pomodoro_prefix_name,
+    is_vc_channel_rename_enabled,
+    restore_vc_channel_if_pomodoro_tag,
+    restore_vc_channel_name_by_id,
+)
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 # エラー・レート制限の通知先チャンネルID（ボットに「メッセージを送信」権限を付与すること）
 _error_channel_id_str = os.getenv("ERROR_CHANNEL_ID", "").strip()
@@ -86,21 +93,20 @@ class PomodoroView(ui.View):
         super().__init__(timeout=None)
         self.start_button = None
         self.pause_button = None
-        self.stop_button = None
 
     @discord.ui.button(label="開始", style=discord.ButtonStyle.green, emoji="▶️", custom_id="start_pomodoro")
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild_id in GUILD_TIMER:
-            await interaction.response.send_message('⚠️ すでにポモドーロ中です。停止ボタンで止めてから再度試してください。', ephemeral=True)
+            await interaction.response.send_message('⚠️ すでにポモドーロ中です。終了ボタンで止めてから再度試してください。', ephemeral=True)
             return
 
         if not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message('❌ VCに入ってから実行してください。', ephemeral=True)
             return
 
-        # ボットの権限チェック
+        # チャンネル名変更を使う場合のみ「チャンネル管理」が必要
         bot_member = interaction.guild.get_member(interaction.client.user.id)
-        if not bot_member.guild_permissions.manage_channels:
+        if is_vc_channel_rename_enabled() and not bot_member.guild_permissions.manage_channels:
             await interaction.response.send_message('❌ ボットにチャンネル管理の権限がありません。サーバー設定で権限を付与してください。', ephemeral=True)
             return
 
@@ -157,13 +163,9 @@ class PomodoroView(ui.View):
                 while True:
                     # 作業時間（25分）：現在のチャンネル名をAPIから取得してから付与
                     try:
-                        current = interaction.guild.get_channel(channel_id)
-                        if current is None:
-                            current = await interaction.guild.fetch_channel(channel_id)
-                        current_name = current.name if current else ""
-                        new_name = f"(ポモ中){original_channel_name}"
-                        if current_name != new_name:
-                            await current.edit(name=new_name)
+                        await ensure_pomodoro_prefix_name(
+                            interaction.guild, channel_id, original_channel_name
+                        )
                     except Exception as e:
                         await notify_error("チャンネル名変更（作業開始時）", e)
                         if not channel_rename_error_told[0] and text_channel:
@@ -187,20 +189,7 @@ class PomodoroView(ui.View):
                         await asyncio.sleep(1)
                         GUILD_REMAINING[interaction.guild_id] -= 1
                     
-                    # 休憩時間（5分）
-                    try:
-                        ch = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
-                        if ch:
-                            await ch.edit(name=original_channel_name)
-                    except Exception as e:
-                        await notify_error("チャンネル名変更（休憩開始時）", e)
-                        if not channel_rename_error_told[0] and text_channel:
-                            try:
-                                await text_channel.send("⚠️ VC名の変更ができませんでした（権限不足など）。タイマー・音声はそのまま続行します。")
-                                channel_rename_error_told[0] = True
-                            except Exception:
-                                pass
-                    
+                    # 休憩中も VC 名は (ポモ中) のまま（休憩ごとに PATCH すると Discord のチャンネル更新レート制限 429 に当たりやすい）
                     try:
                         await play_mp3(vc, 'break.mp3')
                     except Exception as e:
@@ -217,9 +206,9 @@ class PomodoroView(ui.View):
             except asyncio.CancelledError:
                 await vc.disconnect()
                 try:
-                    ch = interaction.guild.get_channel(channel_id) or await interaction.guild.fetch_channel(channel_id)
-                    if ch:
-                        await ch.edit(name=original_channel_name)
+                    await restore_vc_channel_name_by_id(
+                        interaction.guild, channel_id, original_channel_name
+                    )
                 except Exception as e:
                     await notify_error("チャンネル名復元（停止時）", e)
                 return
@@ -233,36 +222,36 @@ class PomodoroView(ui.View):
             await interaction.response.send_message('⏸️ タイマーは動いていません。', ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
+
+        remaining_minutes = GUILD_REMAINING[interaction.guild_id] // 60
+        remaining_seconds = GUILD_REMAINING[interaction.guild_id] % 60
+
         if GUILD_PAUSED.get(interaction.guild_id):
             GUILD_PAUSED[interaction.guild_id] = False
-            remaining_minutes = GUILD_REMAINING[interaction.guild_id] // 60
-            remaining_seconds = GUILD_REMAINING[interaction.guild_id] % 60
-            # ボタンの状態を一時停止に戻す
             button.label = "一時停止"
             button.emoji = "⏸️"
             button.style = discord.ButtonStyle.grey
-            try:
-                await interaction.message.edit(view=self)
-            except discord.NotFound as e:
-                await notify_error("メッセージの編集（一時停止→再開）", e)
-            except Exception as e:
-                await notify_error("メッセージの編集（一時停止→再開）", e)
-            await interaction.response.send_message(f'▶️ タイマーを再開しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
+            info = f'▶️ タイマーを再開しました。残り時間: {remaining_minutes}分{remaining_seconds}秒'
+            err_ctx = "メッセージの編集（一時停止→再開）"
         else:
             GUILD_PAUSED[interaction.guild_id] = True
-            remaining_minutes = GUILD_REMAINING[interaction.guild_id] // 60
-            remaining_seconds = GUILD_REMAINING[interaction.guild_id] % 60
-            # ボタンの状態を再開に変更
             button.label = "再開"
             button.emoji = "▶️"
             button.style = discord.ButtonStyle.green
-            try:
-                await interaction.message.edit(view=self)
-            except discord.NotFound as e:
-                await notify_error("メッセージの編集（一時停止）", e)
-            except Exception as e:
-                await notify_error("メッセージの編集（一時停止）", e)
-            await interaction.response.send_message(f'⏸️ タイマーを一時停止しました。残り時間: {remaining_minutes}分{remaining_seconds}秒', ephemeral=True)
+            info = f'⏸️ タイマーを一時停止しました。残り時間: {remaining_minutes}分{remaining_seconds}秒'
+            err_ctx = "メッセージの編集（一時停止）"
+
+        try:
+            await interaction.edit_original_response(view=self)
+        except discord.NotFound as e:
+            await notify_error(err_ctx, e)
+        except Exception as e:
+            await notify_error(err_ctx, e)
+        try:
+            await interaction.followup.send(info, ephemeral=True)
+        except discord.HTTPException as e:
+            await notify_error("followup送信（一時停止/再開）", e)
 
     async def _do_stop(self, interaction: discord.Interaction):
         """停止・終了の共通処理。defer 済みであること。"""
@@ -281,10 +270,9 @@ class PomodoroView(ui.View):
         GUILD_REMAINING.pop(interaction.guild_id, None)
 
         vc = interaction.guild.voice_client
-        if vc and vc.channel and "(ポモ中)" in vc.channel.name:
+        if vc and vc.channel:
             try:
-                original_name = vc.channel.name.replace("(ポモ中)", "").strip()
-                await vc.channel.edit(name=original_name)
+                await restore_vc_channel_if_pomodoro_tag(vc.channel)
             except Exception as e:
                 await notify_error("チャンネル名復元（_do_stop）", e)
         if vc:
@@ -316,15 +304,6 @@ class PomodoroView(ui.View):
             except Exception:
                 pass
         return True
-
-    @discord.ui.button(label="停止", style=discord.ButtonStyle.red, emoji="⏹️", custom_id="stop_pomodoro")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild_id not in GUILD_TIMER:
-            await interaction.response.send_message('⏹️ タイマーは動いていません。', ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        if not await self._do_stop(interaction):
-            await interaction.followup.send('⏹️ タイマーは動いていません。', ephemeral=True)
 
     @discord.ui.button(label="終了", style=discord.ButtonStyle.red, emoji="🔚", custom_id="end_pomodoro")
     async def end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -361,12 +340,20 @@ bot = PomodoroBot()
 async def pomodoro(interaction: discord.Interaction):
     view = PomodoroView()
     await interaction.response.send_message(
-        "ポモドーロタイマー\n▶️ 開始: タイマーを開始\n⏸️ 一時停止: 一時停止/再開\n⏹️ 停止 / 🔚 終了: タイマーを停止",
+        "ポモドーロタイマー\n▶️ 開始: タイマーを開始\n⏸️ 一時停止: 一時停止/再開\n🔚 終了: タイマーを停止",
         view=view,
         ephemeral=True
     )
 
 async def play_mp3(vc: discord.VoiceClient, filename: str):
+    # 接続完了直後のわずかな遅延で is_connected が False のときがあるため短時間待つ
+    for _ in range(100):
+        if vc.is_connected():
+            break
+        await asyncio.sleep(0.1)
+    if not vc.is_connected():
+        raise discord.ClientException("Not connected to voice.")
+
     source = discord.FFmpegPCMAudio(source=os.path.join('sounds', filename))
     vc.play(source)
     while vc.is_playing():
